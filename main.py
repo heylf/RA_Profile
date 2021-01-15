@@ -5,9 +5,10 @@ import time
 import sys
 import multiprocessing
 
-RNA_VALUE_LIST = dict()
-RNA_ID_LIST = dict()
-RNA_SEQ_PEAK_COORDS = dict()
+B_VALUE_LIST = dict()
+B_ID_LIST = dict()
+B_PEAK_COORDS = dict()
+NUM_B_PEAKS = 0
 
 # Function to obtain the number of lines in a file.
 def get_line_count(filepath):
@@ -18,185 +19,209 @@ def get_line_count(filepath):
     file.close()
     return count
 
-def reg_potential(atac_peak_coords, rna_seq_peak_coords, max_dist):
-    start_a = int(atac_peak_coords[1])
-    end_a = int(atac_peak_coords[2])
+# Function calculates the regulatory potential for a region.
+def reg_potential(a_coords, b_coords, max_dist):
+    # Get the coordinates for region A.
+    start_a = int(a_coords[1])
+    end_a = int(a_coords[2])
 
-    start_b = int(rna_seq_peak_coords[1])
-    end_b = int(rna_seq_peak_coords[2])
+    # Get the coordniates for region B.
+    start_b = int(b_coords[1])
+    end_b = int(b_coords[2])
 
+    # Intitialize potential.
     potential = 0.0
 
+    # Caluclate the shortest distance between A and B.
     dist = np.min([np.abs(start_a - start_b), np.abs(end_a - start_b), np.abs(start_a - end_b), np.abs(end_a - end_b)])
+
+    # Calculate the relative distance based on the user defined maximal distance.
     relative_dist = dist / max_dist
+
+    # Region has to be closer than the maximal distance.
     if ( relative_dist <= 1.0 ):
         potential = np.exp(-(0.5 + 4 * relative_dist))
 
     return potential
 
-def init_peak_analysis(i, atac_data, potential_dict, significance_dict):
-    print(i)
+# Function to do a parallel investigation of a region A to all other regions B.
+def init_peak_analysis(i, a_data, potential_dict, significance_dict, t):
+    # Initialize potential
     potential = 0.0
-    coords_a = atac_data[0]
+
+    # Get coordinates for A.
+    coords_a = a_data[0]
     chr_a = coords_a[0]
     strand_a = coords_a[3]
-    for j in range(0, num_rna_peaks):
-        # check chromosome and strandness
-        coords_b = RNA_SEQ_PEAK_COORDS[RNA_ID_LIST[j]]
+
+    # Go over all regions of set B.
+    for j in range(0, NUM_B_PEAKS):
+
+        # Get coordinates of B
+        coords_b = B_PEAK_COORDS[B_ID_LIST[j]]
         chr_b = coords_b[0]
         strand_b = coords_b[3]
-        corr = 0.0
-        pval = 1.0
+
+        # If strandness does not matter.
         if ( strandness == 1 ):
             strand_a = strand_b
 
+        # Check if both region are on the same chr and strand.
         if ( chr_a == chr_b and strand_a == strand_b ):
-            corr, pval = stats.spearmanr(atac_data[1], RNA_VALUE_LIST[j])
+
+            # Calculate the correlation and pvalue between region A and B.
+            corr, pval = stats.spearmanr(a_data[1], B_VALUE_LIST[j])
+
+            # Check if the correlation and pval are not defined.
             if ( np.isnan(corr) ):
                 corr = 0.0
             if ( np.isnan(pval) ):
                 pval = 1.0
-            if ( corr < t ):
+
+            # Only consider regions B if they pass the pval threshold.
+            if ( pval < t ):
                 potential += reg_potential(coords_a, coords_b, 100000)
+
+    # Insert potential and significance in the dictionary.
     potential_dict[i] = potential
     significance_dict[i] = (1 - stats.norm.cdf(potential))
 
-# calculate distance
-# first check if both of them on same chromosome (yes = continue, no = nan value)
-# second check strand (yes = continue, no = nan value)
-# min(abs(start_atac - start_rna), abs(end_atac - start_rna)) = distrance
 
-print("[START]")
+if __name__ == "__main__":
+    print("[START]")
 
-#atac_peaks_path = "/home/florian/Documents/ATAC_Project/atac_peaks.tabular"
-atac_peaks_path = "/home/florian/Documents/ATAC_Project/atac_peaks_subset.tabular"
-rna_seq_path = "/home/florian/Documents/ATAC_Project/rna_seq.tabular"
+    #atac_peaks_path = "/home/florian/Documents/ATAC_Project/atac_peaks.tabular"
+    regions_a_file_path = "/home/florian/Documents/ATAC_Project/atac_peaks_subset.tabular"
+    regions_b_file_path = "/home/florian/Documents/ATAC_Project/rna_seq.tabular"
 
-output_path = "/home/florian/Documents/ATAC_Project/"
+    output_path = "/home/florian/Documents/ATAC_Project/"
 
-num_atac_peaks = get_line_count(atac_peaks_path) - 1
-num_rna_peaks = get_line_count(rna_seq_path) - 1
+    # Get number of peaks of region set A and B.
+    num_a_peaks = get_line_count(regions_a_file_path) - 1
+    NUM_B_PEAKS = get_line_count(regions_b_file_path) - 1
 
-atac_peaks_file = open(atac_peaks_path, "r")
-headline_x = atac_peaks_file.readline()
+    print("Analysing {} of regions A".format(num_a_peaks))
+    print("Analysing {} of regions B".format(NUM_B_PEAKS))
 
-rna_seq_file = open(rna_seq_path, "r")
-headline_y = rna_seq_file.readline()
+    a_value_list = [ [0.0] ] * num_a_peaks
+    a_id_list = [""] * num_a_peaks
 
-#blastn_short_file = open(blastn_short_path, "r")
+    # Get ids and values of regions set A.
+    regions_a_file = open(regions_a_file_path, "r")
+    headline_a = regions_a_file.readline()
+    for i in range(0, num_a_peaks):
+        line_atac = regions_a_file.readline()
+        x = line_atac.strip("\n").split("\t")
+        a_id_list[i] = x[0]
+        a_value_list[i] = [float(val) for val in x[1:]]
+    regions_a_file.close()
 
-print("Analysing {} ATAC peaks".format(num_atac_peaks))
-print("Analysing {} RNA-Seq peaks".format(num_rna_peaks))
+    # Get ids and values of regions set B.
+    regions_b_file = open(regions_b_file_path, "r")
+    headline_b = regions_b_file.readline()
+    for i in range(0, NUM_B_PEAKS):
+        line_rna = regions_b_file.readline()
+        y = line_rna.strip("\n").split("\t")
+        B_ID_LIST[i] = y[0]
+        B_VALUE_LIST[i] = [float(val) for val in y[1:]]
+    regions_b_file.close()
 
-atac_value_list = [ [0.0] ] * num_atac_peaks
+    id_delimiter = "|"
 
-atac_id_list = [""] * num_atac_peaks
+    # Get coordinates for region set A.
+    regions_a_coords_path = "/home/florian/Documents/ATAC_Project/atac_peaks.bed"
+    region_a_coords_file = open(regions_a_coords_path, "r")
 
-for i in range(0, num_atac_peaks):
-    line_atac = atac_peaks_file.readline()
-    x = line_atac.strip("\n").split("\t")
-    atac_id_list[i] = x[0]
-    atac_value_list[i] = [float(val) for val in x[1:]]
+    regions_a_coords = dict()
+    regions_a_coords_to_id = dict()
 
-atac_peaks_file.close()
+    for line in region_a_coords_file:
+        values = line.strip("\n").split("\t")
+        if ( values[3] not in regions_a_coords ):
+            coords = [values[0], values[1], values[2], values[5]]
+            regions_a_coords[values[3]] = coords
+            regions_a_coords_to_id[id_delimiter.join(coords)] = values[3]
+    region_a_coords_file.close()
 
-for i in range(0, num_rna_peaks):
-    line_rna = rna_seq_file.readline()
-    y = line_rna.strip("\n").split("\t")
-    RNA_ID_LIST[i] = y[0]
-    RNA_VALUE_LIST[i] = [float(val) for val in y[1:]]
+    # Get coordinates for region set B.
+    regions_b_coords_path = "/home/florian/Documents/ATAC_Project/mm10_annotation.bed"
+    regions_b_coords_file = open(regions_b_coords_path, "r")
 
-rna_seq_file.close()
+    for line in regions_b_coords_file:
+        values = line.strip("\n").split("\t")
+        if ( values[3] not in B_PEAK_COORDS ):
+            B_PEAK_COORDS[values[3]] = [values[0], values[1], values[2], values[5]]
+    regions_b_coords_file.close()
 
-id_delimiter = "|"
+    # Read blastn file if you want to check also if ATAC-Peaks cover specific transcription factors.
+    blastn_short_path = "/home/florian/Documents/ATAC_Project/blastn_short.tabular"
+    blastn_file = open(blastn_short_path, "r")
 
-atac_peaks_coords_path = "/home/florian/Documents/ATAC_Project/atac_peaks.bed"
-atac_peaks_coords = dict()
-atac_coords_to_id = dict()
-atac_peaks_coords_file = open(atac_peaks_coords_path, "r")
+    strandness = 1
 
-for line in atac_peaks_coords_file:
-    values = line.strip("\n").split("\t")
-    if ( values[3] not in atac_peaks_coords ):
-        coords = [values[0], values[1], values[2], values[5]]
-        atac_peaks_coords[values[3]] = coords
-        atac_coords_to_id[id_delimiter.join(coords)] = values[3]
+    num_motif_dict = dict()
 
-atac_peaks_coords_file.close()
+    # Go over every line in the blast file.
+    for line in blastn_file:
+        # Get the coordinates of the regions with a TF motif. I will use the coordinates as ids. Becuase blastn
+        # Does not uses saves the ids.
+        values = line.strip("\n").split("\t")
+        coords = values[0].split(id_delimiter)
+        coords = coords[1:]
 
-rna_seq_peaks_coords_path = "/home/florian/Documents/ATAC_Project/mm10_annotation.bed"
-rna_seq_peaks_coords_file = open(rna_seq_peaks_coords_path, "r")
+        # Check if strandness is relevant.
+        if(strandness == 1):
+            coords[-1] = "."
 
-for line in rna_seq_peaks_coords_file:
-    values = line.strip("\n").split("\t")
-    if ( values[3] not in atac_peaks_coords ):
-        RNA_SEQ_PEAK_COORDS[values[3]] = [values[0], values[1], values[2], values[5]]
+        # Add up the number of motifs for a region in the regions set A.
+        if ( id_delimiter.join(coords) in regions_a_coords_to_id ):
+            id = regions_a_coords_to_id[id_delimiter.join(coords)]
+            if( id not in num_motif_dict ):
+                num_motif_dict[id] = 0
+            else:
+                num_motif_dict[id] += 1
 
-rna_seq_peaks_coords_file.close()
+    blastn_file.close()
 
-# Read blastn file if you want to check also if ATAC-Peaks cover specific transcription factors.
-blastn_short_path = "/home/florian/Documents/ATAC_Project/blastn_short.tabular"
-blastn_file = open(blastn_short_path, "r")
+    # Create manager for parallel processing.
+    manager = multiprocessing.Manager()
+    potential_dict = manager.dict()
+    significance_dict = manager.dict()
 
-strandness = 1
+    pool = multiprocessing.Pool(4)
 
-num_motif_dict = dict()
+    start = time.time()
+    # Analyse any region in the region set A.
+    for i in range(0, num_a_peaks):
+        atac_data = [regions_a_coords[a_id_list[i]], a_value_list[i]]
+        try:
+            pool.apply_async(init_peak_analysis, args=(i, atac_data, potential_dict, significance_dict, 0.05))
+        except:
+            print("[ERROR 1] Failed Analysis")
 
-for line in blastn_file:
-    values = line.strip("\n").split("\t")
-    coords = values[0].split(id_delimiter)
-    coords = coords[1:]
+    pool.close()
+    pool.join()
 
-    if(strandness == 1):
-        coords[-1] = "."
+    end = time.time()
+    print(end - start)
 
-    if ( id_delimiter.join(coords) in atac_coords_to_id ):
-        id = atac_coords_to_id[id_delimiter.join(coords)]
-        if( id not in num_motif_dict ):
-            num_motif_dict[id] = 0
+    # Do a p-vlaue correction for multiple hypothesis testing.
+    corrected_pvals = multi.multipletests(significance_dict.values(), alpha=0.05, method='fdr_bh', is_sorted=False, returnsorted=False)
+
+    # List of improtant ATAC_peaks:
+    # All regions A with high correlation --> calculate from them the regulatory potential for the atac peak
+    # pvalue from the cdf of a normal distribution
+    potential_file = open(output_path + "/potential_file.tsv", "w")
+    potential_file.write("ATAC_Peak\tRegulatory_Potential\tp-val\tcorrected_p-val\tNum_Motifs\n")
+
+    for i in range(0, len(a_id_list)):
+        peak_id = a_id_list[i]
+        if ( peak_id in num_motif_dict ):
+            print(peak_id)
+            potential_file.write(("{}\t{}\t{}\t{}\t{}\n").format(peak_id, potential_dict[i], significance_dict[i],
+                                                             corrected_pvals[1][i], num_motif_dict[peak_id]))
         else:
-            num_motif_dict[id] += 1
+            potential_file.write(("{}\t{}\t{}\t{}\t{}\n").format(peak_id, potential_dict[i], significance_dict[i],
+                                                             corrected_pvals[1][i], 0))
 
-blastn_file.close()
-
-t = 0.05
-
-manager = multiprocessing.Manager()
-potential_dict = manager.dict()
-significance_dict = manager.dict()
-
-pool = multiprocessing.Pool(4)
-
-start = time.time()
-for i in range(0, num_atac_peaks):
-    atac_data = [atac_peaks_coords[atac_id_list[i]], atac_value_list[i]]
-    try:
-        pool.apply_async(init_peak_analysis, args=(i, atac_data, potential_dict, significance_dict))
-    except:
-        print("[ERROR 1] Failed Analysis")
-
-pool.close()
-pool.join()
-
-end = time.time()
-print(end - start)
-
-potential_file = open(output_path + "/potential_file.tsv", "w")
-potential_file.write("ATAC_Peak\tRegulatory_Potential\tp-val\tcorrected_p-val\tNum_Motifs\n")
-
-corrected_pvals = multi.multipletests(significance_dict.values(), alpha=0.05, method='fdr_bh', is_sorted=False, returnsorted=False)
-
-# List of improtant ATAC_peaks
-# all genes with high correlation --> calculate from them the regulatory potential for the atac peak
-# pvalue from the cdf of a normal distribution
-for i in range(0, len(atac_id_list)):
-    peak_id = atac_id_list[i]
-    if ( peak_id in num_motif_dict ):
-        print(peak_id)
-        potential_file.write(("{}\t{}\t{}\t{}\t{}\n").format(peak_id, potential_dict[i], significance_dict[i],
-                                                         corrected_pvals[1][i], num_motif_dict[peak_id]))
-    else:
-        potential_file.write(("{}\t{}\t{}\t{}\t{}\n").format(peak_id, potential_dict[i], significance_dict[i],
-                                                         corrected_pvals[1][i], 0))
-
-potential_file.close()
+    potential_file.close()
